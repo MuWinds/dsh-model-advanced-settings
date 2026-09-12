@@ -27,7 +27,24 @@ Add the package to a dsh profile's `dsh.profile.bundles`:
 }
 ```
 
-Then install the dependency in the profile (e.g. `dsh plugin --profile web add @muwinds/dsh-model-advanced-settings`) and restart the web profile.
+Then install the dependency in the profile and restart the web profile:
+
+```
+dsh plugin --profile web add @muwinds/dsh-model-advanced-settings
+```
+
+Installing from a local checkout: `dsh plugin` forwards its arguments through a
+shell on Windows, so a spec containing spaces is split. Point at a space-free
+path instead (a junction works):
+
+```
+mklink /J C:\dsh-mas-src "C:\path with spaces\dsh-model-advanced-settings"
+dsh plugin --profile web add link:C:\dsh-mas-src
+```
+
+`dsh plugin` reconciles the profile's `dsh.profile.bundles` from the installed
+state, so the bundle joins the layer stack on its own — no need to hand-edit the
+package.json above.
 
 ## Structure
 
@@ -41,6 +58,22 @@ Single-bundle plugin (the standard dsh plugin shape):
 
 - Only `llm-pi-ai` providers with a **user-declared `models` list** appear in the page (custom providers; the built-in Models page already owns catalog providers).
 - Leaving the subagent provider/model empty keeps the default behaviour (inherit the parent model).
+- Requires dsh `>= 0.1.5-rc.1` (`dsh.engines.dsh`). It previously declared
+  `@deepseek-ai/dsh-client-runtime` and `@deepseek-ai/dsh-client-ui-slots` under
+  `dsh.client.inject`; those packages do not exist — the boot graph resolves
+  every `inject` entry as a package row — and the browser half failed to
+  compose. `slots` and `locale` are client-runtime services and belong only in
+  the bundle's own `inject` export, so the declaration now names just
+  `@deepseek-ai/dsh-client-ui-settings`.
+- The subagent model is persisted to `<harness home>/subagent-model.json`,
+  derived from the settings document path. Only a document named
+  `settings.<ext>` yields a sibling file; any other name leaves the feature
+  inert rather than writing to the settings document itself.
+- The subagent override is applied at `agent/request`; if a session runs with a
+  confined (non-`danger-full-access`) write policy, writing
+  `subagent-model.json` is refused by the sandbox and the handler returns
+  `{ ok: false, error: … }` — the page surfaces that message. The reasoning-effort
+  and retry-policy writes go through the settings service and are unaffected.
 
 ## License
 
