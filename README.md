@@ -61,27 +61,35 @@ Single-bundle plugin (the standard dsh plugin shape):
 
 ### Thinking levels
 
-Each of the seven levels has its own tick box, so a model offers exactly the
-levels you tick — unticked levels are pinned to `null` in pi-ai's
-`thinkingLevelMap` and disappear from the model picker.
+Levels are an **editable row list** — one row per level a model offers, each
+with a level dropdown and a wire-value input, plus a `−` button on the row and
+an **+ Add level** button under the list. A level with no row is absent from the
+dict, which `dsh-llm-pi-ai` pins to `null` in pi-ai's `thinkingLevelMap`; that is
+what removes it from the model picker. Each dropdown only offers levels no other
+row already uses, since a duplicate key would collapse on save.
 
-The level **vocabulary is closed**. `dsh-llm-pi-ai` validates the dict keys
-against pi-ai's `ModelThinkingLevel` union (`off | minimal | low | medium |
-high | xhigh | max`), so a brand-new level name cannot be declared — only which
-of the seven are offered, and the wire spelling each one sends. Adding a level
-upstream would need a pi-ai change.
+The level **vocabulary is closed**, which is the one thing the row list cannot
+change. `dsh-llm-pi-ai` validates the dict keys against pi-ai's
+`ModelThinkingLevel` union (`off | minimal | low | medium | high | xhigh | max`),
+so a custom level name is rejected outright; and even if one were stored, pi-ai's
+`clampThinkingLevel` maps an unrecognised id onto the first available level — a
+silent wrong-parameter bug. Adding a genuinely new level therefore needs a pi-ai
+change, not a plugin change. What you control per model is *which* of the seven
+are offered and the wire spelling each sends.
 
-`Off` is special, and is why it now has a tick box of its own:
+`Off` sits on its own row (a checkbox rather than a list entry) because it is not
+an escalation step:
 
-| `off` value | Stored | Effect |
+| Off row | Stored | Effect |
 |---|---|---|
-| unticked | key absent | not offered in the picker |
-| ticked, blank | `off: null` | offered; selecting it sends **no** reasoning parameter |
-| ticked, `none` | `off: "none"` | offered; selecting it sends that explicit value |
+| unchecked | key absent | not offered in the picker |
+| checked, blank | `off: null` | offered; selecting it sends **no** reasoning parameter |
+| checked, `none` | `off: "none"` | offered; selecting it sends that explicit value |
 
-Every other ticked level must carry a wire value — `dsh-llm-pi-ai` rejects an
-empty string, and rejects a dict whose only level is `off` (`reasoningEfforts
-offers no level beyond "off"`), so the page refuses both before writing.
+Every listed level must carry a wire value. The page refuses an empty one, a
+duplicated level, and a list that is empty or that leaves only `off` —
+`dsh-llm-pi-ai` rejects all of those at model resolution, which would otherwise
+leave the whole provider unable to register.
 
 - Requires dsh `>= 0.1.5-rc.1` (`dsh.engines.dsh`). It previously declared
   `@deepseek-ai/dsh-client-runtime` and `@deepseek-ai/dsh-client-ui-slots` under
