@@ -1,8 +1,9 @@
 # dsh-model-advanced-settings
 
-Model advanced settings for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) web UI. Adds a **「模型高级设置 / Model advanced settings」** section to Settings with three capabilities:
+Model advanced settings for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) web UI. Adds a **「模型高级设置 / Model advanced settings」** section to Settings with four capabilities:
 
 - **Thinking levels (reasoningEfforts)** — per-model wire values (`minimal` / `low` / `medium` / `high` / `xhigh` / `max`), written to `llm-pi-ai.providers.<route>.models[].reasoningEfforts`.
+- **Input modalities** — per-model `text` / `image` acceptance, written to `llm-pi-ai.providers.<route>.models[].input`.
 - **Retry policy** — per-provider `retryPolicy`: finite (`normal` + `maxRetries`) or unlimited (`always`), written to `llm-pi-ai.providers.<route>.retryPolicy`.
 - **Subagent model** — a default provider/model for delegated subagents, persisted to `<harness home>/subagent-model.json`; subagents use it instead of inheriting the parent model.
 
@@ -54,10 +55,53 @@ Single-bundle plugin (the standard dsh plugin shape):
 - `lib/client.js` — Browser half: the `settings.section` page (discovered through the `dsh.client` declaration).
 - `cordis.patch.yml` — loader patch inserting the row into the profile.
 
+Tests: `npm test` (`node --test "test/*.test.mjs"`). The suite mounts both halves
+against fake harnesses — the browser half through a small React hook shim, so it
+runs in plain Node with no browser and no build step.
+
 ## Notes
 
 - Only `llm-pi-ai` providers with a **user-declared `models` list** appear in the page (custom providers; the built-in Models page already owns catalog providers).
 - Leaving the subagent provider/model empty keeps the default behaviour (inherit the parent model).
+- The page reads the `llm` service on `/load` to resolve inherited modalities for
+  its hint; a harness without that service still loads the page, just without the
+  hint.
+
+### Input modalities
+
+Each model card carries a **Text / Image** checkbox pair, written to
+`providers.<route>.models[].input`. The vocabulary is closed — `dsh-llm-pi-ai`
+validates it against pi-ai's own `Model<Api>['input'][number]` union, which is
+`text | image` — so the page cannot offer anything else.
+
+What the boxes mean is subtler than it looks, because an absent list and an empty
+one are the same thing to `dsh-llm-pi-ai`:
+
+| Boxes | Stored | Effect |
+|---|---|---|
+| all unticked | field absent | the model states no answer, so it inherits |
+| some ticked | `input: [...]` | the model claims exactly those modalities |
+
+That "inherit" is not a fixed default: `dsh-llm-pi-ai` falls back to the
+installed catalog entry's modalities, then to the route's `defaultInput` (itself
+`["text"]` unless configured). Which of those wins is a fact only the adapter
+knows, so the page asks it — through `llm.listModels()` — and shows the resolved
+list as an `inherit: …` hint next to the boxes. The hint is advisory: when the
+adapter cannot answer, or the route is not mounted, the hint is simply omitted
+and the boxes still work.
+
+Declaring modalities is what makes a hand-declared vision model usable: a model
+pi-ai has never heard of gets no catalog entry, so without an explicit `input` it
+falls back to `defaultInput` and the harness refuses image attachments with
+`pi-ai model "…" does not support image input`. It is a claim about the endpoint,
+not a check of it — nothing interrogates a gateway — so a model claiming images
+its endpoint refuses fails at the provider instead, mid-turn.
+
+Modalities are orthogonal to reasoning, so the pair stays editable on a model
+whose **Reasoning model** toggle is off; a non-reasoning model can still accept
+images. The page refuses a list naming an unknown modality or one repeated
+twice; both would otherwise be rejected by the settings schema with a message
+that does not name the offending model.
 
 ### Thinking levels
 

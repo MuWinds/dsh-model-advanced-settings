@@ -1,7 +1,7 @@
 {
   "name": "@muwinds/dsh-model-advanced-settings",
-  "version": "0.2.0",
-  "description": "Model advanced settings for the DeepSeek Harness web UI: per-model thinking levels (reasoningEfforts), per-provider retry policy (finite / unlimited), and a subagent default model. · 模型高级设置：推理等级、重试策略（有限/无限）、Subagent 独立模型。",
+  "version": "0.3.0",
+  "description": "Model advanced settings for the DeepSeek Harness web UI: per-model thinking levels (reasoningEfforts) and input modalities, per-provider retry policy (finite / unlimited), and a subagent default model. · 模型高级设置：推理等级、输入模态、重试策略（有限/无限）、Subagent 独立模型。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -22,10 +22,14 @@
     "dsh-plugin",
     "thinking-levels",
     "reasoning-efforts",
+    "input-modalities",
     "retry-policy",
     "subagent"
   ],
   "license": "MIT",
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  },
   "dsh": {
     "engines": {
       "dsh": ">=0.1.5-rc.1"
