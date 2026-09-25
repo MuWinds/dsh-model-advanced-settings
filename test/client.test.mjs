@@ -129,3 +129,73 @@ test("a model with reasoning off still carries its modalities", async () => {
   assert.deepEqual(body.models[1], { id: "b", input: ["image"], reasoningEfforts: false });
   restore();
 });
+
+/** The one DeveloperRole select, which the provider-level block owns. */
+function developerRoleSelect(tree) {
+  const selects = byClass(tree, "dsw-mas-compat");
+  assert.equal(selects.length, 1, "one provider-level DeveloperRole select");
+  return selects[0];
+}
+
+/** A select's option labels, in order. `walk` flattens, so the texts are read directly. */
+function optionLabels(select) {
+  return select.children.filter((n) => n.text !== undefined).map((n) => n.text);
+}
+
+test("the DeveloperRole select offers all three states", async () => {
+  const { tree, restore } = await ready();
+  const select = developerRoleSelect(tree);
+  assert.deepEqual(optionLabels(select), ["默认（自动检测）", "支持", "不支持"]);
+  assert.equal(select.props.value, "", "a switch the document never set shows as the default");
+  restore();
+});
+
+test("a stored DeveloperRole switch selects its own state", async () => {
+  for (const [stored, expected] of [[true, "true"], [false, "false"]]) {
+    const { tree, restore } = await ready({
+      load: {
+        routes: [{
+          route: "laneai",
+          displayName: "test123",
+          supportsDeveloperRole: stored,
+          models: [{ id: "a", name: "A", reasoningEfforts: { low: "low" } }],
+        }],
+        subagent: {},
+      },
+    });
+    assert.equal(developerRoleSelect(tree).props.value, expected);
+    restore();
+  }
+});
+
+test("English locale renders the DeveloperRole labels", async () => {
+  const { tree, restore } = await ready({ locale: "en" });
+  assert.deepEqual(optionLabels(developerRoleSelect(tree)), ["Default (auto-detect)", "Supported", "Unsupported"]);
+  restore();
+});
+
+test("saving sends the DeveloperRole choice", async () => {
+  const { tree, calls, render, restore } = await ready();
+  developerRoleSelect(tree).props.onChange({ target: { value: "false" } });
+  render();
+  const saveButton = walk(render()).find((n) => n.type === "button" && n.className === "dsw-mas-btn");
+  saveButton.props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const { body } = calls.find((c) => c.action === "save");
+  assert.equal(body.supportsDeveloperRole, false);
+  restore();
+});
+
+test("an untouched DeveloperRole choice is sent as null, not false", async () => {
+  const { tree, calls, render, restore } = await ready();
+  const saveButton = walk(render()).find((n) => n.type === "button" && n.className === "dsw-mas-btn");
+  saveButton.props.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const { body } = calls.find((c) => c.action === "save");
+  // `null` is the request's "state no answer", which the host writes as an
+  // `unset`; a default must never be persisted as a declaration.
+  assert.equal(body.supportsDeveloperRole, null);
+  restore();
+});

@@ -171,3 +171,114 @@ test("a second apply is a no-op while the first fiber is mounted", async () => {
   assert.equal(mountedAgain, false, "the process-wide guard rejects a duplicate mount");
   assert.equal((await first.post("load", {})).status, 200);
 });
+
+/** A one-model route whose protocol and compat switches the test chooses. */
+function developerRoleDoc(api, compat) {
+  return {
+    providers: {
+      laneai: {
+        displayName: "test123",
+        ...api === undefined ? {} : { api },
+        ...compat === undefined ? {} : { compat },
+        models: [{ id: "a", name: "A", reasoningEfforts: { low: "low" } }],
+      },
+    },
+  };
+}
+
+/** The compat op of a save, or undefined when the request wrote none. */
+function compatOp(writes) {
+  return writes[0].ops.find((op) => op.path.join(".") === "providers.laneai.compat.supportsDeveloperRole");
+}
+
+test("load exposes the stored DeveloperRole switch without the rest of compat", async () => {
+  const { post } = mount({ doc: developerRoleDoc("openai-completions", { supportsDeveloperRole: false, supportsReasoningEffort: true }) });
+  const { payload } = await post("load", {});
+  assert.equal(payload.routes[0].supportsDeveloperRole, false);
+  assert.equal("compat" in payload.routes[0], false, "sibling compat switches are not part of the page's view");
+});
+
+test("load leaves an unset DeveloperRole switch absent, which is not `false`", async () => {
+  const { post } = mount();
+  const { payload } = await post("load", {});
+  // An absent key is pi-ai's "detect it from the URL", and the page has to be
+  // able to tell that apart from a stored `false`.
+  assert.equal("supportsDeveloperRole" in payload.routes[0], false);
+});
+
+test("save writes DeveloperRole as a narrow op under the provider's compat", async () => {
+  const { post, writes } = mount({ doc: developerRoleDoc("openai-completions", { supportsReasoningEffort: true }) });
+  const { payload } = await post("save", {
+    route: "laneai",
+    models: [{ id: "a", reasoningEfforts: { low: "low" } }],
+    supportsDeveloperRole: true,
+  });
+  assert.equal(payload.ok, true);
+  // A whole-dict write would silently drop `supportsReasoningEffort`, which
+  // this page does not manage.
+  assert.deepEqual(compatOp(writes), {
+    op: "set",
+    path: ["providers", "laneai", "compat", "supportsDeveloperRole"],
+    value: true,
+  });
+});
+
+test("choosing the default unsets the switch rather than storing false", async () => {
+  const { post, writes } = mount({ doc: developerRoleDoc("openai-completions", { supportsDeveloperRole: true }) });
+  const { payload } = await post("save", {
+    route: "laneai",
+    models: [{ id: "a", reasoningEfforts: { low: "low" } }],
+    supportsDeveloperRole: null,
+  });
+  assert.equal(payload.ok, true);
+  assert.deepEqual(compatOp(writes), {
+    op: "unset",
+    path: ["providers", "laneai", "compat", "supportsDeveloperRole"],
+  });
+});
+
+test("a caller that omits DeveloperRole leaves the stored switch alone", async () => {
+  const { post, writes } = mount({ doc: developerRoleDoc("openai-completions", { supportsDeveloperRole: true }) });
+  await post("save", {
+    route: "laneai",
+    models: [{ id: "a", reasoningEfforts: { low: "low" } }],
+  });
+  assert.equal(compatOp(writes), undefined);
+});
+
+test("save refuses a DeveloperRole value that is not a boolean or null", async () => {
+  const { post, writes } = mount();
+  const { payload } = await post("save", {
+    route: "laneai",
+    models: [{ id: "a", reasoningEfforts: { low: "low" } }, { id: "b", reasoningEfforts: false }],
+    supportsDeveloperRole: "yes",
+  });
+  assert.match(payload.error, /supportsDeveloperRole must be true, false, or null/);
+  assert.equal(writes.length, 0, "nothing is written for a refused request");
+});
+
+test("save refuses DeveloperRole on a protocol that has no such role", async () => {
+  const { post, writes } = mount({ doc: developerRoleDoc("anthropic-messages") });
+  const { payload } = await post("save", {
+    route: "laneai",
+    models: [{ id: "a", reasoningEfforts: { low: "low" } }],
+    supportsDeveloperRole: true,
+  });
+  // Anthropic Messages carries the system prompt in a top-level parameter, so
+  // pi-ai would refuse the route; the page names the mistake first.
+  assert.match(payload.error, /speaks "anthropic-messages", which has no developer role/);
+  assert.equal(writes.length, 0);
+});
+
+test("a route with no declared protocol still accepts DeveloperRole", async () => {
+  const { post, writes } = mount();
+  const { payload } = await post("save", {
+    route: "laneai",
+    models: [{ id: "a", reasoningEfforts: { low: "low" } }, { id: "b", reasoningEfforts: false }],
+    supportsDeveloperRole: false,
+  });
+  // A catalog route omits `api`; which protocol its models speak is the
+  // installed catalog's business, so the page cannot decide it here.
+  assert.equal(payload.ok, true);
+  assert.equal(compatOp(writes).value, false);
+});

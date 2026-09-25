@@ -1,10 +1,11 @@
 # dsh-model-advanced-settings
 
-Model advanced settings for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) web UI. Adds a **「模型高级设置 / Model advanced settings」** section to Settings with four capabilities:
+Model advanced settings for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) web UI. Adds a **「模型高级设置 / Model advanced settings」** section to Settings with five capabilities:
 
 - **Thinking levels (reasoningEfforts)** — per-model wire values (`minimal` / `low` / `medium` / `high` / `xhigh` / `max`), written to `llm-pi-ai.providers.<route>.models[].reasoningEfforts`.
 - **Input modalities** — per-model `text` / `image` acceptance, written to `llm-pi-ai.providers.<route>.models[].input`.
 - **Retry policy** — per-provider `retryPolicy`: finite (`normal` + `maxRetries`) or unlimited (`always`), written to `llm-pi-ai.providers.<route>.retryPolicy`.
+- **DeveloperRole** — per-provider `compat.supportsDeveloperRole`: supported, unsupported, or left to detection, written to `llm-pi-ai.providers.<route>.compat.supportsDeveloperRole`.
 - **Subagent model** — a default provider/model for delegated subagents, persisted to `<harness home>/subagent-model.json`; subagents use it instead of inheriting the parent model.
 
 ## Install
@@ -151,6 +152,45 @@ leave the whole provider unable to register.
   `subagent-model.json` is refused by the sandbox and the handler returns
   `{ ok: false, error: … }` — the page surfaces that message. The reasoning-effort
   and retry-policy writes go through the settings service and are unaffected.
+
+### DeveloperRole
+
+`dsh-llm-pi-ai` lets a profile override pi-ai's URL-based auto-detection with a
+`compat` dict, and one of those switches decides whether the system prompt goes
+out under the `developer` role or the older `system` role. The page exposes that
+one switch per provider:
+
+| Choice | Stored | Effect |
+|---|---|---|
+| Default (auto-detect) | key absent | pi-ai detects the answer from the endpoint URL |
+| Supported | `compat: {supportsDeveloperRole: true}` | the `developer` role is sent |
+| Unsupported | `compat: {supportsDeveloperRole: false}` | the `system` role is sent |
+
+The three states are not a nicety. An absent key is not `false`: for
+`openai-completions` pi-ai *detects* the answer from the URL, and for
+`openai-responses` its own default is `true` — so a two-state checkbox would
+turn "say nothing" into a declaration nobody made and silently change the
+request for every route a user merely opened the page on. The page therefore
+reads presence, not truthiness, and a switch it never set renders as the default.
+
+It is a **provider-level** switch for two reasons: `compat` resolution lets a
+model-level switch override the route's field by field, so a route default is
+the value every model shares unless one says otherwise; and the trait belongs to
+the gateway, not to one model. The write addresses only the one key —
+`set`/`unset` on `providers.<route>.compat.supportsDeveloperRole` — never the
+whole dict, because `compat` also carries switches this page does not manage
+(`thinkingFormat`, `supportsReasoningEffort`, `cacheControlFormat`, …) and a
+wholesale write would silently replace them with the page's partial view.
+
+The vocabulary is closed, and narrower than pi-ai's compat types: only the four
+OpenAI-shaped protocols offer the field (`openai-completions`,
+`openai-responses`, `azure-openai-responses`, `openai-codex-responses`).
+Anthropic Messages has no such switch because it carries the system prompt in a
+top-level parameter rather than a message role. A route that declares
+`api: anthropic-messages` is refused before the write, naming the protocol; a
+route that declares no `api` is left to `dsh-llm-pi-ai`, whose own gate reports
+the refusal, since which protocol a catalog route's models speak is the
+installed catalog's business.
 
 ## License
 
