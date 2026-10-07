@@ -32,8 +32,8 @@ export function mountClient(options = {}) {
       displayName: "test123",
       retryPolicy: { mode: "always" },
       models: [
-        { id: "a", name: "A", input: ["text", "image"], effectiveInput: ["text", "image"], reasoningEfforts: { low: "low" } },
-        { id: "b", name: "B", effectiveInput: ["text"], reasoningEfforts: false },
+        { id: "a", name: "A", reasoningEfforts: { low: "low" } },
+        { id: "b", name: "B", reasoningEfforts: false },
       ],
     }],
     subagent: { provider: "", model: "" },

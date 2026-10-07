@@ -2,12 +2,12 @@
  * Regression tests for the host half (@muwinds/dsh-model-advanced-settings).
  *
  * Run with `node --test test/`. Mounts apply() against a fake ctx and drives
- * the /dsh-model-advanced/* handler directly, covering the per-model input
- * modality path alongside the reasoning-effort and retry-policy behaviour.
+ * the /dsh-model-advanced/* handler directly, covering the reasoning-effort,
+ * retry-policy, DeveloperRole, and subagent-default behaviour.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { apply } from "../lib/index.js";
+import { apply, Config } from "../lib/index.js";
 
 const MOUNT_GUARD = Symbol.for("@muwinds/dsh-model-advanced-settings/mounted");
 
@@ -27,33 +27,43 @@ function fixture() {
   };
 }
 
+/** A mutable stand-in for one schemastery `.volatile()` reference. */
+function ref(value) {
+  const box = { value, get() { return box.value; } };
+  return box;
+}
+
 /**
  * Mount the plugin against a fake harness.
- * @param options - `{doc, llm}` overrides for the settings document and adapter.
- * @returns `{post, writes}` where `post` drives the HTTP handler.
+ * @param options - `{doc, subagent, namespace, mutate, noSettings}` overrides.
+ * @returns `{post, writes, routes, config}` where `post` drives the HTTP handler.
  */
 function mount(options = {}) {
   delete globalThis[MOUNT_GUARD];
   const doc = options.doc ?? fixture();
   const writes = [];
+  const routes = [];
+  const config = {
+    subagentProvider: ref(options.subagent?.provider ?? ""),
+    subagentModel: ref(options.subagent?.model ?? ""),
+  };
   const settings = {
     describe: () => [{ ns: "llm-pi-ai", user: structuredClone(doc) }],
-    mutate: async (ns, ops) => { writes.push({ ns, ops: JSON.parse(JSON.stringify(ops)) }); },
-    prepareDocument: async () => "/tmp/settings.yaml",
-  };
-  const llm = options.llm ?? {
-    listModels: async () => [
-      { provider: "laneai", id: "a", name: "A", inputModalities: ["text", "image"] },
-      { provider: "laneai", id: "b", name: "B", inputModalities: ["text"] },
-    ],
+    mutate: async (ns, ops) => {
+      if (options.mutate !== undefined) await options.mutate(ns, ops);
+      writes.push({ ns, ops: JSON.parse(JSON.stringify(ops)) });
+    },
   };
   let handler;
   apply({
-    get: (name) => (name === "settings" ? settings : name === "llm" ? llm : undefined),
-    effect: () => {},
+    get: (name) => (name === "settings" && options.noSettings !== true ? settings : undefined),
+    // The plugin registers the route and the mount guard through effects, so
+    // the fake has to run them the way cordis does.
+    effect: (fn) => fn(),
     on: () => {},
-    webServer: { register: (route) => { handler = route.handler; } },
-  });
+    fiber: { entry: { options: { id: options.namespace ?? "model-advanced-settings" } } },
+    webServer: { register: (route) => { routes.push(route); handler = route.handler; return () => {}; } },
+  }, config);
   const post = async (action, body) => {
     const req = {
       method: "POST",
@@ -71,79 +81,80 @@ function mount(options = {}) {
     });
     return { status, payload };
   };
-  return { post, writes };
+  return { post, writes, routes, config };
 }
 
-test("load exposes each model's declared and resolved modalities", async () => {
+test("the route is a prefix route registered through an effect", async () => {
+  const { routes } = mount();
+  assert.equal(routes.length, 1);
+  assert.equal(routes[0].kind, "prefix");
+  assert.equal(routes[0].path, "/dsh-model-advanced");
+  assert.equal(typeof routes[0].handler, "function");
+});
+
+test("load exposes each route's models, levels, and retry policy", async () => {
   const { post } = mount();
   const { status, payload } = await post("load", {});
   assert.equal(status, 200);
-  const [a, b] = payload.routes[0].models;
-  // `input` is what the document declares; `effectiveInput` is what dispatch
-  // will use, which the adapter resolves through the catalog/defaultInput chain.
-  assert.deepEqual(a.input, ["text", "image"]);
-  assert.deepEqual(a.effectiveInput, ["text", "image"]);
-  assert.equal("input" in b, false, "an undeclared input is not invented");
-  assert.deepEqual(b.effectiveInput, ["text"]);
+  const [route] = payload.routes;
+  assert.equal(route.route, "laneai");
+  assert.equal(route.displayName, "test123");
+  assert.deepEqual(route.retryPolicy, { mode: "always" });
+  assert.deepEqual(route.models.map((m) => m.id), ["a", "b"]);
+  assert.deepEqual(route.models[0].reasoningEfforts, { low: "low" });
+  assert.equal(route.models[1].reasoningEfforts, false);
 });
 
-test("load keeps working when the adapter cannot answer", async () => {
-  const { post } = mount({
-    llm: { listModels: async () => { throw new Error("NO_ADAPTER"); } },
-  });
+test("load keeps the page's view of a route to the fields it manages", async () => {
+  const { post } = mount();
   const { payload } = await post("load", {});
-  const [a] = payload.routes[0].models;
-  assert.deepEqual(a.input, ["text", "image"]);
-  assert.equal("effectiveInput" in a, false, "no hint when the adapter cannot resolve");
+  // Input modalities belong to the harness Models page now; restating them
+  // here would be a second writer of one field.
+  assert.equal("input" in payload.routes[0].models[0], false);
+  assert.equal("effectiveInput" in payload.routes[0].models[0], false);
 });
 
-test("save writes a declared modality list and drops the field when cleared", async () => {
+test("load reports no routes when the settings service is unavailable", async () => {
+  const { post } = mount({ noSettings: true });
+  const { payload } = await post("load", {});
+  assert.deepEqual(payload.routes, []);
+  assert.deepEqual(payload.subagent, { provider: "", model: "" });
+});
+
+test("save writes thinking levels and the retry policy", async () => {
   const { post, writes } = mount();
   const { payload } = await post("save", {
     route: "laneai",
     models: [
-      { id: "a", reasoningEfforts: { low: "low" } },
-      { id: "b", input: ["text", "image"], reasoningEfforts: false },
+      { id: "a", reasoningEfforts: { low: "low", max: "max" } },
+      { id: "b", reasoningEfforts: false },
     ],
-    retryPolicy: { mode: "always" },
+    retryPolicy: { mode: "normal", maxRetries: 3 },
   });
   assert.equal(payload.ok, true);
+  assert.equal(writes[0].ns, "llm-pi-ai");
   const next = writes[0].ops[0].value;
-  assert.equal("input" in next[0], false, "clearing every box returns the model to inherit");
-  assert.deepEqual(next[0].reasoningEfforts, { low: "low" });
-  assert.deepEqual(next[1].input, ["text", "image"]);
+  assert.deepEqual(next[0].reasoningEfforts, { low: "low", max: "max" });
   assert.equal(next[1].reasoningEfforts, false);
+  assert.deepEqual(writes[0].ops[1], {
+    op: "set",
+    path: ["providers", "laneai", "retryPolicy"],
+    value: { mode: "normal", maxRetries: 3 },
+  });
 });
 
-test("save stores no `input` for an empty list, which states no answer", async () => {
+test("save preserves the fields this page does not own", async () => {
   const { post, writes } = mount();
   await post("save", {
     route: "laneai",
-    models: [
-      { id: "a", input: [], reasoningEfforts: { low: "low" } },
-      { id: "b", reasoningEfforts: false },
-    ],
+    models: [{ id: "a", reasoningEfforts: { low: "low" } }, { id: "b", reasoningEfforts: false }],
     retryPolicy: { mode: "always" },
   });
-  // dsh-llm-pi-ai reads absent and `[]` identically, so storing `[]` would be a
-  // document claiming a declaration the user did not make.
-  assert.equal("input" in writes[0].ops[0].value[0], false);
-});
-
-test("save rejects modality lists dsh-llm-pi-ai would refuse", async () => {
-  const cases = [
-    [["video"], 'model "a" input has unknown modality "video"; pi-ai offers text, image'],
-    [["image", "image"], 'model "a" input lists "image" twice'],
-    ["image", 'model "a" input must be an array of modalities'],
-  ];
-  for (const [input, expected] of cases) {
-    const { post } = mount();
-    const { payload } = await post("save", {
-      route: "laneai",
-      models: [{ id: "a", input, reasoningEfforts: { low: "low" } }, { id: "b", reasoningEfforts: false }],
-    });
-    assert.equal(payload.error, expected);
-  }
+  const next = writes[0].ops[0].value;
+  // `input` and the capacity fields belong to the Models page; a save here
+  // must not silently erase them.
+  assert.deepEqual(next[0].input, ["text", "image"]);
+  assert.equal(next[0].name, "A");
 });
 
 test("save reports an unknown provider and a bad reasoning level", async () => {
@@ -157,6 +168,16 @@ test("save reports an unknown provider and a bad reasoning level", async () => {
     route: "laneai",
     models: [{ id: "a", reasoningEfforts: { bogus: "x" } }, { id: "b", reasoningEfforts: false }],
   })).payload.error, /unknown level "bogus"/);
+
+  assert.match((await post("save", {
+    route: "laneai",
+    models: [{ id: "a", reasoningEfforts: { low: "" } }, { id: "b", reasoningEfforts: false }],
+  })).payload.error, /must not be an empty string/);
+
+  assert.equal((await post("save", {
+    route: "laneai",
+    models: [{ id: "nope", reasoningEfforts: { low: "low" } }],
+  })).payload.error, "no matching model");
 });
 
 test("a second apply is a no-op while the first fiber is mounted", async () => {
@@ -166,8 +187,9 @@ test("a second apply is a no-op while the first fiber is mounted", async () => {
     get: () => undefined,
     effect: () => {},
     on: () => {},
+    fiber: { entry: { options: { id: "model-advanced-settings" } } },
     webServer: { register: () => { mountedAgain = true; } },
-  });
+  }, {});
   assert.equal(mountedAgain, false, "the process-wide guard rejects a duplicate mount");
   assert.equal((await first.post("load", {})).status, 200);
 });
@@ -281,4 +303,104 @@ test("a route with no declared protocol still accepts DeveloperRole", async () =
   // installed catalog's business, so the page cannot decide it here.
   assert.equal(payload.ok, true);
   assert.equal(compatOp(writes).value, false);
+});
+
+// ---------- subagent default ----------
+
+test("the subagent Config declares two volatile string fields", () => {
+  // Volatility is what makes the entry editable live through ctx.settings and
+  // therefore what makes the values durable in the profile patch.
+  assert.deepEqual(Object.keys(Config.dict).sort(), ["subagentModel", "subagentProvider"]);
+  for (const name of Object.keys(Config.dict)) {
+    const field = Config.dict[name];
+    assert.equal(field.type, "string", `${name} must be a string`);
+    assert.equal(field.meta.volatile, true, `${name} must be volatile to be editable live`);
+  }
+  // The serialized schema is what the settings service projects into a form, so
+  // volatility has to survive the round trip too.
+  const json = Config.toJSON();
+  const root = json.refs[json.uid];
+  for (const name of Object.keys(root.dict)) {
+    assert.equal(json.refs[root.dict[name]].meta.volatile, true, `${name} loses volatility in toJSON()`);
+  }
+});
+
+test("load reads the subagent default from the plugin's own config", async () => {
+  const { post, config } = mount({ subagent: { provider: "laneai", model: "a" } });
+  const first = await post("load", {});
+  assert.deepEqual(first.payload.subagent, { provider: "laneai", model: "a" });
+  // A reactive field is read at request time, so a settings write that lands
+  // without a remount is visible immediately.
+  config.subagentProvider.value = "agentrouter";
+  const second = await post("load", {});
+  assert.deepEqual(second.payload.subagent, { provider: "agentrouter", model: "a" });
+});
+
+test("saving the subagent default writes this plugin's own settings entry", async () => {
+  const { post, writes } = mount();
+  const { payload } = await post("subagent", { provider: "laneai", model: "a" });
+  assert.equal(payload.ok, true);
+  // The namespace is the loader entry id `ctx.settings` addresses, not a
+  // plugin-owned file beside the harness home: the platform owns persistence.
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].ns, "model-advanced-settings");
+  assert.deepEqual(writes[0].ops, [
+    { op: "set", path: ["subagentProvider"], value: "laneai" },
+    { op: "set", path: ["subagentModel"], value: "a" },
+  ]);
+});
+
+test("clearing the subagent default stores empty strings, not a deletion", async () => {
+  const { post, writes } = mount({ subagent: { provider: "laneai", model: "a" } });
+  const { payload } = await post("subagent", {});
+  assert.equal(payload.ok, true);
+  assert.deepEqual(writes[0].ops.map((op) => op.value), ["", ""]);
+});
+
+test("a refused subagent write is reported rather than reported as saved", async () => {
+  const { post } = mount({
+    mutate: async () => { throw new Error("Config field \"subagentProvider\" is not volatile"); },
+  });
+  const { payload } = await post("subagent", { provider: "laneai", model: "a" });
+  assert.equal(payload.ok, false);
+  assert.match(payload.error, /not volatile/);
+});
+
+test("the subagent default cannot be saved without an addressable entry", async () => {
+  const { post, writes } = mount({ namespace: "" });
+  const { payload } = await post("subagent", { provider: "laneai", model: "a" });
+  assert.equal(payload.ok, false);
+  assert.match(payload.error, /settings entry/);
+  assert.equal(writes.length, 0);
+});
+
+test("an absent settings service fails the subagent write instead of dropping it", async () => {
+  const { post } = mount({ noSettings: true });
+  const { payload } = await post("subagent", { provider: "laneai", model: "a" });
+  assert.equal(payload.ok, false);
+  assert.match(payload.error, /settings service unavailable/);
+});
+
+test("the subagent override reaches a delegated agent's request", async () => {
+  delete globalThis[MOUNT_GUARD];
+  const listeners = [];
+  const agentListeners = [];
+  apply({
+    get: (name) => (name === "settings" ? { describe: () => [], mutate: async () => {} } : undefined),
+    effect: (fn) => fn(),
+    on: (name, listener) => { if (name === "agent/created") listeners.push(listener); },
+    fiber: { entry: { options: { id: "model-advanced-settings" } } },
+    webServer: { register: () => () => {} },
+  }, { subagentProvider: ref("laneai"), subagentModel: ref("a") });
+
+  assert.equal(listeners.length, 1);
+  // A root agent is not a delegated one, so it is left alone.
+  listeners[0]({ agent: { options: {}, ctx: { on: () => {} } } });
+  assert.equal(agentListeners.length, 0);
+
+  const agentCtx = { on: (name, listener) => { if (name === "agent/request") agentListeners.push(listener); } };
+  listeners[0]({ agent: { options: { subagentDepth: 1 }, ctx: agentCtx } });
+  assert.equal(agentListeners.length, 1);
+  const resolved = await agentListeners[0]({}, async () => ({ provider: "parent", model: "parent-model", reasoningEffort: "high" }));
+  assert.deepEqual(resolved, { provider: "laneai", model: "a", reasoningEffort: "high" });
 });

@@ -1,12 +1,13 @@
 # dsh-model-advanced-settings
 
-Model advanced settings for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) web UI. Adds a **「模型高级设置 / Model advanced settings」** section to Settings with five capabilities:
+Model advanced settings for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) web UI. Adds a **「模型高级设置 / Model advanced settings」** section to Settings with four capabilities:
 
 - **Thinking levels (reasoningEfforts)** — per-model wire values (`minimal` / `low` / `medium` / `high` / `xhigh` / `max`), written to `llm-pi-ai.providers.<route>.models[].reasoningEfforts`.
-- **Input modalities** — per-model `text` / `image` acceptance, written to `llm-pi-ai.providers.<route>.models[].input`.
 - **Retry policy** — per-provider `retryPolicy`: finite (`normal` + `maxRetries`) or unlimited (`always`), written to `llm-pi-ai.providers.<route>.retryPolicy`.
 - **DeveloperRole** — per-provider `compat.supportsDeveloperRole`: supported, unsupported, or left to detection, written to `llm-pi-ai.providers.<route>.compat.supportsDeveloperRole`.
-- **Subagent model** — a default provider/model for delegated subagents, persisted to `<harness home>/subagent-model.json`; subagents use it instead of inheriting the parent model.
+- **Subagent model** — a default provider/model for delegated subagents, stored in this plugin's own settings entry; subagents use it instead of inheriting the parent model.
+
+Input modalities are **not** here: the harness's own **Models** settings page owns `models[].input` for hand-declared pi-ai routes, with the same inheritance semantics, so a second editor would be a second writer of one field.
 
 ## Install
 
@@ -32,7 +33,7 @@ Add the package to a dsh profile's `dsh.profile.bundles`:
 Then install the dependency in the profile and restart the web profile:
 
 ```
-dsh plugin --profile web add @muwinds/dsh-model-advanced-settings
+dsh plugin --profile web add github:MuWinds/dsh-model-advanced-settings
 ```
 
 Installing from a local checkout: `dsh plugin` forwards its arguments through a
@@ -52,57 +53,31 @@ package.json above.
 
 Single-bundle plugin (the standard dsh plugin shape):
 
-- `lib/index.js` — Host half: registers `/dsh-model-advanced/*` HTTP routes and hooks `agent/created` to override the subagent request route.
+- `lib/index.js` — Host half: registers `/dsh-model-advanced/*` HTTP routes, owns the subagent default as its own settings entry, and hooks `agent/created` to override the subagent request route.
 - `lib/client.js` — Browser half: the `settings.section` page (discovered through the `dsh.client` declaration).
 - `cordis.patch.yml` — loader patch inserting the row into the profile.
 
 Tests: `npm test` (`node --test "test/*.test.mjs"`). The suite mounts both halves
 against fake harnesses — the browser half through a small React hook shim, so it
-runs in plain Node with no browser and no build step.
+runs in plain Node with no browser and no build step. The suites need
+`@deepseek-ai/schemastery` resolvable from this package (a real profile supplies
+it from the installation scope), and a confined sandbox cannot run
+`node --test`'s per-file child processes; `node test/host.test.mjs` runs the file
+in process instead.
 
 ## Notes
 
-- Only `llm-pi-ai` providers with a **user-declared `models` list** appear in the page (custom providers; the built-in Models page already owns catalog providers).
-- Leaving the subagent provider/model empty keeps the default behaviour (inherit the parent model).
-- The page reads the `llm` service on `/load` to resolve inherited modalities for
-  its hint; a harness without that service still loads the page, just without the
-  hint.
-
-### Input modalities
-
-Each model card carries a **Text / Image** checkbox pair, written to
-`providers.<route>.models[].input`. The vocabulary is closed — `dsh-llm-pi-ai`
-validates it against pi-ai's own `Model<Api>['input'][number]` union, which is
-`text | image` — so the page cannot offer anything else.
-
-What the boxes mean is subtler than it looks, because an absent list and an empty
-one are the same thing to `dsh-llm-pi-ai`:
-
-| Boxes | Stored | Effect |
-|---|---|---|
-| all unticked | field absent | the model states no answer, so it inherits |
-| some ticked | `input: [...]` | the model claims exactly those modalities |
-
-That "inherit" is not a fixed default: `dsh-llm-pi-ai` falls back to the
-installed catalog entry's modalities, then to the route's `defaultInput` (itself
-`["text"]` unless configured). Which of those wins is a fact only the adapter
-knows, so the page asks it — through `llm.listModels()` — and shows the resolved
-list as an `inherit: …` hint next to the boxes. The hint is advisory: when the
-adapter cannot answer, or the route is not mounted, the hint is simply omitted
-and the boxes still work.
-
-Declaring modalities is what makes a hand-declared vision model usable: a model
-pi-ai has never heard of gets no catalog entry, so without an explicit `input` it
-falls back to `defaultInput` and the harness refuses image attachments with
-`pi-ai model "…" does not support image input`. It is a claim about the endpoint,
-not a check of it — nothing interrogates a gateway — so a model claiming images
-its endpoint refuses fails at the provider instead, mid-turn.
-
-Modalities are orthogonal to reasoning, so the pair stays editable on a model
-whose **Reasoning model** toggle is off; a non-reasoning model can still accept
-images. The page refuses a list naming an unknown modality or one repeated
-twice; both would otherwise be rejected by the settings schema with a message
-that does not name the offending model.
+- Only `llm-pi-ai` providers with a **user-declared `models` list** appear in the
+  page. The built-in Models page owns catalog providers, and it now also owns
+  `models[].input` for hand-declared routes; this page deliberately leaves every
+  field it does not manage in place, `input` included.
+- Leaving the subagent provider/model empty keeps the default behaviour (inherit
+  the parent model).
+- The HTTP route is a deliberate choice, not a shortcut. The harness's typed
+  remote namespaces (`ctx.remote` / `ctx.apiGateway`) are assembled from
+  generated Typert artifacts, which a hand-written plugin has no way to publish;
+  `dsh-host-webserver` is the composition's route registry and expects feature
+  plugins to claim their own paths.
 
 ### Thinking levels
 
@@ -143,15 +118,23 @@ leave the whole provider unable to register.
   compose. `slots` and `locale` are client-runtime services and belong only in
   the bundle's own `inject` export, so the declaration now names just
   `@deepseek-ai/dsh-client-ui-settings`.
-- The subagent model is persisted to `<harness home>/subagent-model.json`,
-  derived from the settings document path. Only a document named
-  `settings.<ext>` yields a sibling file; any other name leaves the feature
-  inert rather than writing to the settings document itself.
-- The subagent override is applied at `agent/request`; if a session runs with a
-  confined (non-`danger-full-access`) write policy, writing
-  `subagent-model.json` is refused by the sandbox and the handler returns
-  `{ ok: false, error: … }` — the page surfaces that message. The reasoning-effort
-  and retry-policy writes go through the settings service and are unaffected.
+- The subagent model is stored in **this plugin's own settings entry** — two
+  `.volatile()` fields on its Config — so the harness persists it in the profile
+  patch under `- id: model-advanced-settings`, revision-fenced and hot-reloaded.
+  It previously wrote a `subagent-model.json` beside the settings document; dsh
+  `0.2` replaced that document with the profile patch, so the derivation found
+  nothing and the store went silently inert while the page still reported a
+  save. The platform store also sidesteps the session file sandbox, which
+  refused a write under the harness home.
+- The subagent default is read from its reactive Config reference at each
+  `agent/created`, not cached at apply time, so a settings write that lands
+  without a remount is honoured by the next delegated agent. The override itself
+  is applied at `agent/request`.
+- `dsh.engines.dsh` is author metadata, not a gate: dsh `0.2` reads only
+  `peerDependencies` entries named `@deepseek-ai/dsh*` when it decides whether a
+  bundle may run. This package deliberately names none — a wrong range would
+  have the bundle skipped silently — and declares only what it imports
+  (`@deepseek-ai/cordis`, `@deepseek-ai/schemastery`), which the gate ignores.
 
 ### DeveloperRole
 
